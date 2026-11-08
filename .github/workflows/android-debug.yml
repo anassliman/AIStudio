@@ -25,12 +25,16 @@ jobs:
       - name: Run core unit tests
         id: core_tests
         run: gradle :core:test --console=plain
+      - name: Run storage JVM unit tests
+        id: storage_tests
+        run: gradle :storage:testDebugUnitTest --console=plain
       - name: Verify storage dependencies
         id: storage_dependencies
         run: |
           gradle :storage:dependencies --configuration debugRuntimeClasspath --console=plain
           gradle :storage:dependencies --configuration kspDebug --console=plain
           gradle :storage:dependencies --configuration kspRelease --console=plain
+          gradle :storage:dependencies --configuration testDebugUnitTestRuntimeClasspath --console=plain
       - name: Run KSP and build storage library (Debug and Release)
         id: storage_build
         run: |
@@ -55,7 +59,28 @@ jobs:
             exit 1
           fi
 
+          if ! find storage/schemas -type f -name '*.json' -print -quit | grep -q .; then
+            echo 'Room schema export did not produce a JSON schema under storage/schemas.' >&2
+            exit 1
+          fi
+
           gradle :storage:assembleDebug :storage:assembleRelease --console=plain
+      - name: Upload Room schema
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-schema
+          path: storage/schemas/
+          if-no-files-found: warn
+      - name: Run storage Android driver instrumentation tests
+        id: storage_android_tests
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: gradle :storage:connectedDebugAndroidTest --console=plain
       - name: Build debug APK
         id: apk_build
         if: ${{ always() && !cancelled() && steps.setup_java.outcome == 'success' && steps.setup_gradle.outcome == 'success' }}
@@ -69,6 +94,17 @@ jobs:
             core/build/reports/tests/test/
             core/build/test-results/test/
           if-no-files-found: warn
+      - name: Upload storage test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-test-reports
+          path: |
+            storage/build/reports/tests/testDebugUnitTest/
+            storage/build/test-results/testDebugUnitTest/
+            storage/build/reports/androidTests/connected/
+            storage/build/outputs/androidTest-results/connected/
+          if-no-files-found: warn
       - name: Upload debug APK
         if: ${{ always() && steps.apk_build.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -80,6 +116,8 @@ jobs:
         if: ${{ always() }}
         env:
           CORE_TEST_RESULT: ${{ steps.core_tests.outcome }}
+          STORAGE_TEST_RESULT: ${{ steps.storage_tests.outcome }}
+          STORAGE_ANDROID_TEST_RESULT: ${{ steps.storage_android_tests.outcome }}
           STORAGE_DEPENDENCIES_RESULT: ${{ steps.storage_dependencies.outcome }}
           STORAGE_BUILD_RESULT: ${{ steps.storage_build.outcome }}
           APK_BUILD_RESULT: ${{ steps.apk_build.outcome }}
@@ -89,6 +127,8 @@ jobs:
             echo '| Step | Result |'
             echo '| --- | --- |'
             echo "| :core:test | ${CORE_TEST_RESULT} |"
+            echo "| :storage:testDebugUnitTest | ${STORAGE_TEST_RESULT} |"
+            echo "| :storage:connectedDebugAndroidTest | ${STORAGE_ANDROID_TEST_RESULT} |"
             echo "| :storage dependency resolution | ${STORAGE_DEPENDENCIES_RESULT} |"
             echo "| :storage KSP (Debug/Release) + assemble (Debug/Release) | ${STORAGE_BUILD_RESULT} |"
             echo "| :app:assembleDebug | ${APK_BUILD_RESULT} |"
