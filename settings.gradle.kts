@@ -15,7 +15,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AIStudio"
-include(":app")
+include(":app", ":core")
 
 // Future independently testable modules from docs/ARCHITECTURE.md can be added
 // here as they are implemented: :core, :providers, :mcp, :permissions,

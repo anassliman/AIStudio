@@ -12,18 +12,51 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
       - name: Set up JDK 17
+        id: setup_java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - name: Set up Gradle 9.5.0
+        id: setup_gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.5.0'
+      - name: Run core unit tests
+        id: core_tests
+        run: gradle :core:test --console=plain
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        id: apk_build
+        if: ${{ always() && !cancelled() && steps.setup_java.outcome == 'success' && steps.setup_gradle.outcome == 'success' }}
+        run: gradle :app:assembleDebug --console=plain
+      - name: Upload core test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-reports
+          path: |
+            core/build/reports/tests/test/
+            core/build/test-results/test/
+          if-no-files-found: warn
       - name: Upload debug APK
+        if: ${{ always() && steps.apk_build.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: ai-studio-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Publish verification summary
+        if: ${{ always() }}
+        env:
+          CORE_TEST_RESULT: ${{ steps.core_tests.outcome }}
+          APK_BUILD_RESULT: ${{ steps.apk_build.outcome }}
+        run: |
+          {
+            echo '## Verification results'
+            echo '| Step | Result |'
+            echo '| --- | --- |'
+            echo "| :core:test | ${CORE_TEST_RESULT} |"
+            echo "| :app:assembleDebug | ${APK_BUILD_RESULT} |"
+            echo '| JDK | 17 (Temurin) |'
+            echo '| Gradle | 9.5.0 (gradle/actions/setup-gradle) |'
+          } >> "$GITHUB_STEP_SUMMARY"
