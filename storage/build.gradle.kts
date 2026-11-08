@@ -48,7 +48,7 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(kotlin("test-junit"))
-    testImplementation("androidx.sqlite:sqlite-bundled:2.7.1")
+    testImplementation("androidx.sqlite:sqlite-bundled-jvm:2.7.1")
 
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

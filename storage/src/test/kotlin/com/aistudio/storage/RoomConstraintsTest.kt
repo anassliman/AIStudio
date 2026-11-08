@@ -29,7 +29,7 @@ import kotlin.test.assertFailsWith
 
 class RoomConstraintsTest {
     @Test
-    fun sqliteAcceptsFailedAndInterruptedDraftsWithoutErrorsThroughMapperAndDao() = runBlocking {
+    fun sqliteAcceptsFailedAndInterruptedDraftsWithoutErrorsThroughMapperAndDao(): Unit = runBlocking {
         val database = inMemoryDatabase()
         try {
             database.conversationDao().insert(conversation("conversation-1"))
@@ -234,7 +234,7 @@ class RoomConstraintsTest {
     }
 
     @Test
-    fun invocationPrimaryKeyAndApprovalIdAreUnique() = runBlocking {
+    fun invocationPrimaryKeyAndApprovalIdAreUnique(): Unit = runBlocking {
         val database = inMemoryDatabase()
         try {
             database.conversationDao().insert(conversation("conversation-1"))

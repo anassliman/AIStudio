@@ -9,7 +9,7 @@ import kotlin.test.assertNotNull
 
 class RoomDatabaseReadWriteTest {
     @Test
-    fun bundledDriverCreatesInMemoryRoomDatabaseAndRoundTripsRows() = runBlocking {
+    fun bundledDriverCreatesInMemoryRoomDatabaseAndRoundTripsRows(): Unit = runBlocking {
         val database = TestStorageDatabaseFactory.inMemoryBuilder().build()
         try {
             val conversation = conversation("conversation-1")
