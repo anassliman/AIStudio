@@ -1,19 +1,25 @@
+import java.io.File
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.process.CommandLineArgumentProvider
+
 plugins {
     id("com.android.library")
     id("com.google.devtools.ksp")
 }
 
-abstract class RoomSchemaArgProvider(
-    @get:org.gradle.api.tasks.InputDirectory
-    @get:org.gradle.api.tasks.PathSensitive(org.gradle.api.tasks.PathSensitivity.RELATIVE)
-    val schemaDirectory: java.io.File,
-) : org.gradle.process.CommandLineArgumentProvider {
+class RoomSchemaArgProvider(
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    val schemaDirectory: File,
+) : CommandLineArgumentProvider {
     override fun asArguments(): Iterable<String> =
-        listOf("room.schemaLocation=${schemaDirectory.absolutePath}")
+        listOf("room.schemaLocation=${schemaDirectory.path}")
 }
 
 ksp {
-    arg(RoomSchemaArgProvider(java.io.File(projectDir, "schemas")))
+    arg(RoomSchemaArgProvider(File(projectDir, "schemas")))
 }
 
 android {
