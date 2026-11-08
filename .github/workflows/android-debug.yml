@@ -25,6 +25,37 @@ jobs:
       - name: Run core unit tests
         id: core_tests
         run: gradle :core:test --console=plain
+      - name: Verify storage dependencies
+        id: storage_dependencies
+        run: |
+          gradle :storage:dependencies --configuration debugRuntimeClasspath --console=plain
+          gradle :storage:dependencies --configuration kspDebug --console=plain
+          gradle :storage:dependencies --configuration kspRelease --console=plain
+      - name: Run KSP and build storage library (Debug and Release)
+        id: storage_build
+        run: |
+          set -euo pipefail
+          gradle :storage:kspDebugKotlin --rerun-tasks --no-build-cache --console=plain --info | tee "$RUNNER_TEMP/storage-ksp-debug.log"
+          if grep -Eq '^> Task :storage:kspDebugKotlin (NO-SOURCE|SKIPPED|UP-TO-DATE|FROM-CACHE)$' "$RUNNER_TEMP/storage-ksp-debug.log"; then
+            echo 'Debug KSP did not execute.' >&2
+            exit 1
+          fi
+          if ! grep -Fxq '> Task :storage:kspDebugKotlin' "$RUNNER_TEMP/storage-ksp-debug.log"; then
+            echo 'Debug KSP task did not execute normally; inspect its Gradle outcome above.' >&2
+            exit 1
+          fi
+
+          gradle :storage:kspReleaseKotlin --rerun-tasks --no-build-cache --console=plain --info | tee "$RUNNER_TEMP/storage-ksp-release.log"
+          if grep -Eq '^> Task :storage:kspReleaseKotlin (NO-SOURCE|SKIPPED|UP-TO-DATE|FROM-CACHE)$' "$RUNNER_TEMP/storage-ksp-release.log"; then
+            echo 'Release KSP did not execute.' >&2
+            exit 1
+          fi
+          if ! grep -Fxq '> Task :storage:kspReleaseKotlin' "$RUNNER_TEMP/storage-ksp-release.log"; then
+            echo 'Release KSP task did not execute normally; inspect its Gradle outcome above.' >&2
+            exit 1
+          fi
+
+          gradle :storage:assembleDebug :storage:assembleRelease --console=plain
       - name: Build debug APK
         id: apk_build
         if: ${{ always() && !cancelled() && steps.setup_java.outcome == 'success' && steps.setup_gradle.outcome == 'success' }}
@@ -49,6 +80,8 @@ jobs:
         if: ${{ always() }}
         env:
           CORE_TEST_RESULT: ${{ steps.core_tests.outcome }}
+          STORAGE_DEPENDENCIES_RESULT: ${{ steps.storage_dependencies.outcome }}
+          STORAGE_BUILD_RESULT: ${{ steps.storage_build.outcome }}
           APK_BUILD_RESULT: ${{ steps.apk_build.outcome }}
         run: |
           {
@@ -56,6 +89,8 @@ jobs:
             echo '| Step | Result |'
             echo '| --- | --- |'
             echo "| :core:test | ${CORE_TEST_RESULT} |"
+            echo "| :storage dependency resolution | ${STORAGE_DEPENDENCIES_RESULT} |"
+            echo "| :storage KSP (Debug/Release) + assemble (Debug/Release) | ${STORAGE_BUILD_RESULT} |"
             echo "| :app:assembleDebug | ${APK_BUILD_RESULT} |"
             echo '| JDK | 17 (Temurin) |'
             echo '| Gradle | 9.5.0 (gradle/actions/setup-gradle) |'
