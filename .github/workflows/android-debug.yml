@@ -32,9 +32,9 @@ jobs:
         id: storage_dependencies
         run: |
           gradle :storage:dependencies --configuration debugRuntimeClasspath --console=plain
-          gradle :storage:dependencies --configuration kspDebug --console=plain
-          gradle :storage:dependencies --configuration kspRelease --console=plain
-          gradle :storage:dependencies --configuration testDebugUnitTestRuntimeClasspath --console=plain
+          gradle :storage:dependencies --configuration debugUnitTestRuntimeClasspath --console=plain
+          gradle :storage:dependencies --configuration kspDebugKotlinProcessorClasspath --console=plain
+          gradle :storage:dependencies --configuration kspReleaseKotlinProcessorClasspath --console=plain
       - name: Run KSP and build storage library (Debug and Release)
         id: storage_build
         run: |
