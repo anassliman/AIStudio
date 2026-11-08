@@ -47,6 +47,7 @@ dependencies {
     add("kspRelease", "androidx.room3:room3-compiler:3.0.3")
 
     testImplementation(kotlin("test"))
+    testImplementation(kotlin("test-junit"))
     testImplementation("androidx.sqlite:sqlite-bundled:2.7.1")
 
     androidTestImplementation("androidx.test:runner:1.7.0")
