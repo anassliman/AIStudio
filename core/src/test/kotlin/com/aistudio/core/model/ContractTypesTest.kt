@@ -75,6 +75,7 @@ class ContractTypesTest {
             id = MessageId("assistant-1"),
             role = MessageRole.ASSISTANT,
             content = MessageContent.text("answer"),
+            sequence = 1,
         )
         val success = ConversationResult.Success(conversation, user, assistant)
         val failure = ConversationResult.Failure(
@@ -82,6 +83,9 @@ class ContractTypesTest {
         )
 
         assertEquals("answer", assertIs<ConversationResult.Success>(success).assistantMessage.content.text)
+        assertFailsWith<IllegalArgumentException> {
+            ConversationResult.Success(conversation, user, assistant.copy(sequence = user.sequence))
+        }
         assertEquals(
             ConversationError.ProviderFailure(ProviderError.Unavailable),
             assertIs<ConversationResult.Failure>(failure).error,
