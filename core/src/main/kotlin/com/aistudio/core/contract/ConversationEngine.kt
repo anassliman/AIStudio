@@ -6,6 +6,7 @@ import com.aistudio.core.model.ApprovalId
 import com.aistudio.core.model.ConversationId
 import com.aistudio.core.model.SendMessageRequest
 import com.aistudio.core.model.ToolLimits
+import com.aistudio.core.model.ToolCallId
 
 /** Coordinates a conversation without depending on UI, storage, or provider implementations. */
 interface ConversationEngine {
@@ -23,5 +24,11 @@ interface ConversationEngine {
         conversationId: ConversationId,
         approvalId: ApprovalId,
         decision: ApprovalDecision,
+    ): ConversationResult
+
+    /** Explicitly resumes a previously approved tool call after validating its persisted approval. */
+    suspend fun resumeApprovedTool(
+        conversationId: ConversationId,
+        callId: ToolCallId,
     ): ConversationResult
 }

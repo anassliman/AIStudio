@@ -61,7 +61,9 @@ data class MessageDraft(
     val status: MessageStatus,
 ) {
     init {
-        require(role != MessageRole.TOOL || content.parts.count { it is MessagePart.ToolResult } == 1) {
+        require(role != MessageRole.TOOL ||
+            (content.parts.size == 1 && content.parts.single() is MessagePart.ToolResult)
+        ) {
             "Tool messages must contain exactly one tool result"
         }
         require(role == MessageRole.TOOL || content.parts.none { it is MessagePart.ToolResult }) {
@@ -98,7 +100,9 @@ data class Message(
         require(role == MessageRole.ASSISTANT || toolCalls == 0) {
             "Only assistant messages may contain tool calls"
         }
-        require(role == MessageRole.TOOL && toolResults == 1 || role != MessageRole.TOOL && toolResults == 0) {
+        require(role == MessageRole.TOOL && content.parts.size == 1 && toolResults == 1 ||
+            role != MessageRole.TOOL && toolResults == 0
+        ) {
             "Tool messages must contain exactly one tool result; other roles must not contain one"
         }
     }

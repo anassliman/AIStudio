@@ -19,7 +19,8 @@ import com.aistudio.core.model.ToolInvocationTransition
 /**
  * Persistence boundary. Sequence allocation, turn writes, invocation registration, and approval
  * consumption must be atomic in an implementation. Contract-level tests do not prove SQLite behavior.
- * Approval expiry uses the implementation's trusted clock, never a timestamp from the caller.
+ * Approval expiry uses a captured ClockSnapshot: elapsed realtime and BootCount decide validity;
+ * wall time is retained for display/audit only. Implementations fail closed when BootCount is unknown.
  */
 interface ConversationRepository {
     suspend fun getConversation(id: ConversationId): Conversation?
@@ -83,6 +84,10 @@ interface ConversationRepository {
     /**
      * Compare-and-set transition; only the expected current state may be changed. In particular,
      * exactly one caller may claim APPROVED -> RUNNING before performing an external side effect.
+     * That claim must validate the persisted approval's elapsed deadline and BootCount in the same
+     * transaction. For terminal COMPLETED, FAILED, or DENIED states, Updated means the required
+     * result was durably persisted. EXPIRED, CANCELLED, and UNKNOWN_AFTER_RESTART are terminal
+     * states that do not require a result.
      */
     suspend fun transitionToolInvocation(
         conversationId: ConversationId,
@@ -92,9 +97,11 @@ interface ConversationRepository {
     ): ToolInvocationTransition
 
     /**
-     * Atomically validates binding, freshly recomputed fingerprint, expiry, and one-time consumption.
-     * No fingerprint is accepted from the caller; implementations compare persisted fingerprints
-     * against a fresh calculation from the persisted original request.
+     * Atomically validates binding, freshly recomputed fingerprint, elapsed expiry, boot session,
+     * and one-time consumption. Wall time is not used to authorize the decision. No fingerprint is
+     * accepted from the caller; implementations compare persisted fingerprints against a fresh
+     * calculation from the persisted original request. Unknown or changed boot sessions expire the
+     * approval and must not authorize execution.
      */
     suspend fun consumeApproval(
         approvalId: ApprovalId,

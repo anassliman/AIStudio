@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
+import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,25 +44,167 @@ class ApprovalAndConcurrencyContractTest {
             id = ApprovalId("approval-1"),
             conversationId = conversationId,
             request = toolRequest,
-            createdAt = now,
-            expiresAt = now.plusSeconds(60),
+            now = snapshot(),
+            ttl = Duration.ofSeconds(60),
         )
 
-        assertIs<ApprovalValidationResult.Valid>(approval.validateFor(conversationId, now))
+        assertEquals(now, approval.createdAt)
+        assertEquals(now.plusSeconds(60), approval.expiresAt)
+        assertEquals(now.toEpochMilli(), approval.createdElapsedRealtimeMillis)
+        assertEquals(now.toEpochMilli() + 60_000, approval.expiresElapsedRealtimeMillis)
+        assertIs<ApprovalValidationResult.Valid>(approval.validateFor(conversationId, snapshot()))
         assertEquals(
             ApprovalValidationResult.WrongConversation,
-            approval.validateFor(ConversationId("other"), now),
+            approval.validateFor(ConversationId("other"), snapshot()),
         )
         assertEquals(
             ApprovalValidationResult.Expired,
-            approval.validateFor(conversationId, now.plusSeconds(60)),
+            approval.validateFor(conversationId, snapshot(elapsedMillis = approval.expiresElapsedRealtimeMillis)),
         )
 
         val changedRequest = request(arguments = "{\"x\":2}")
         val alteredRecord = approval.copy(request = changedRequest)
         assertEquals(
             ApprovalValidationResult.FingerprintMismatch,
-            alteredRecord.validateFor(conversationId, now),
+            alteredRecord.validateFor(conversationId, snapshot()),
+        )
+    }
+
+    @Test
+    fun approvalExpiresAtExactElapsedDeadline() {
+        val approval = pendingApproval()
+
+        assertEquals(
+            ApprovalValidationResult.Expired,
+            approval.validateFor(
+                conversationId,
+                snapshot(elapsedMillis = approval.expiresElapsedRealtimeMillis),
+            ),
+        )
+    }
+
+    @Test
+    fun approvalCreationRejectsUnknownBootCount() {
+        val failure = kotlin.test.assertFailsWith<IllegalArgumentException> {
+            PendingToolApproval.create(
+                id = ApprovalId("approval-unknown-boot"),
+                conversationId = conversationId,
+                request = toolRequest,
+                now = snapshot(bootCount = BootCount.Unknown),
+                ttl = Duration.ofSeconds(60),
+            )
+        }
+
+        assertEquals("Cannot create a tool approval when the boot count is unknown", failure.message)
+    }
+
+    @Test
+    fun approvalCreationRejectsElapsedDeadlineOverflow() {
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            PendingToolApproval.create(
+                id = ApprovalId("approval-deadline-overflow"),
+                conversationId = conversationId,
+                request = toolRequest,
+                now = snapshot(elapsedMillis = Long.MAX_VALUE - 10),
+                ttl = Duration.ofMillis(60_000),
+            )
+        }
+    }
+
+    @Test
+    fun approvalCreationRejectsDurationThatCannotFitElapsedMilliseconds() {
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            PendingToolApproval.create(
+                id = ApprovalId("approval-duration-overflow"),
+                conversationId = conversationId,
+                request = toolRequest,
+                now = snapshot(),
+                ttl = Duration.ofSeconds(Long.MAX_VALUE),
+            )
+        }
+    }
+
+    @Test
+    fun approvalExpiryUsesMonotonicTimeAndBootSessionInsteadOfWallTime() {
+        val approval = pendingApproval()
+
+        assertIs<ApprovalValidationResult.Valid>(
+            approval.validateFor(
+                conversationId,
+                snapshot(wallTime = now.minusSeconds(86_400)),
+            ),
+        )
+        assertEquals(
+            ApprovalValidationResult.Expired,
+            approval.validateFor(conversationId, snapshot(bootCount = BootCount.Known(2))),
+        )
+        assertEquals(
+            ApprovalValidationResult.Expired,
+            approval.validateFor(conversationId, snapshot(bootCount = BootCount.Unknown)),
+        )
+    }
+
+    @Test
+    fun unknownOrChangedBootSessionExpiresApprovalAndPreventsRunClaim() = runTest {
+        var currentTime = snapshot()
+        val repository = ContractRepository(Clock { currentTime })
+        val approval = pendingApproval()
+        repository.registerToolInvocation(pendingInvocation(approval))
+        assertIs<ApprovalClaimResult.Claimed>(
+            repository.consumeApproval(approval.id, conversationId, ApprovalDecision.APPROVE),
+        )
+
+        currentTime = currentTime.copy(bootCount = BootCount.Unknown)
+        val approved = repository.getToolInvocation(conversationId, approval.request.callId)!!
+        val result = repository.transitionToolInvocation(
+            conversationId,
+            approval.request.callId,
+            ToolInvocationStatus.APPROVED,
+            approved.copy(status = ToolInvocationStatus.RUNNING),
+        )
+
+        assertEquals(ToolInvocationTransition.StateConflict(ToolInvocationStatus.EXPIRED), result)
+        assertEquals(
+            ToolInvocationStatus.EXPIRED,
+            repository.getToolInvocation(conversationId, approval.request.callId)?.status,
+        )
+
+        var unknownClockSnapshot = snapshot()
+        val pendingRepository = ContractRepository(Clock { unknownClockSnapshot })
+        val pendingApproval = pendingApproval(id = "approval-unknown-clock", callId = "unknown-clock-call")
+        pendingRepository.registerToolInvocation(pendingInvocation(pendingApproval))
+        unknownClockSnapshot = unknownClockSnapshot.copy(bootCount = BootCount.Unknown)
+        assertEquals(
+            ApprovalClaimResult.Expired,
+            pendingRepository.consumeApproval(
+                pendingApproval.id,
+                conversationId,
+                ApprovalDecision.APPROVE,
+            ),
+        )
+        assertEquals(
+            ToolInvocationStatus.EXPIRED,
+            pendingRepository.getToolInvocation(conversationId, pendingApproval.request.callId)?.status,
+        )
+    }
+
+    @Test
+    fun recoveryExpiresApprovedInvocationAfterBootCountChanges() = runTest {
+        var currentTime = snapshot()
+        val repository = ContractRepository(Clock { currentTime })
+        val approval = pendingApproval(id = "approval-recovery-boot", callId = "recovery-boot-call")
+        repository.registerToolInvocation(pendingInvocation(approval))
+        assertIs<ApprovalClaimResult.Claimed>(
+            repository.consumeApproval(approval.id, conversationId, ApprovalDecision.APPROVE),
+        )
+
+        currentTime = currentTime.copy(bootCount = BootCount.Known(2))
+        val report = repository.recoverInterruptedWork()
+
+        assertEquals(1, report.expiredApprovals)
+        assertEquals(
+            ToolInvocationStatus.EXPIRED,
+            repository.getToolInvocation(conversationId, approval.request.callId)?.status,
         )
     }
 
@@ -169,7 +312,7 @@ class ApprovalAndConcurrencyContractTest {
         val changedRequest = request(arguments = "{\"x\":2}")
         assertEquals(
             ApprovalValidationResult.FingerprintMismatch,
-            approval.copy(request = changedRequest).validateFor(conversationId, now),
+            approval.copy(request = changedRequest).validateFor(conversationId, snapshot()),
         )
     }
 
@@ -266,6 +409,8 @@ class ApprovalAndConcurrencyContractTest {
         assertFalse(MessageStatus.CANCELLED.canTransitionTo(MessageStatus.COMPLETED))
         assertTrue(ToolInvocationStatus.RUNNING.canTransitionTo(ToolInvocationStatus.CANCELLED))
         assertTrue(ToolInvocationStatus.RUNNING.canTransitionTo(ToolInvocationStatus.UNKNOWN_AFTER_RESTART))
+        assertTrue(ToolInvocationStatus.APPROVED.canTransitionTo(ToolInvocationStatus.EXPIRED))
+        assertFalse(ToolInvocationStatus.EXPIRED.canTransitionTo(ToolInvocationStatus.RUNNING))
         assertFalse(ToolInvocationStatus.UNKNOWN_AFTER_RESTART.canTransitionTo(ToolInvocationStatus.RUNNING))
     }
 
@@ -375,9 +520,15 @@ class ApprovalAndConcurrencyContractTest {
         id = ApprovalId(id),
         conversationId = conversationId,
         request = request(callId = callId),
-        createdAt = now,
-        expiresAt = now.plusSeconds(60),
+        now = snapshot(),
+        ttl = Duration.ofSeconds(60),
     )
+
+    private fun snapshot(
+        wallTime: Instant = now,
+        elapsedMillis: Long = now.toEpochMilli(),
+        bootCount: BootCount = BootCount.Known(1),
+    ) = ClockSnapshot(wallTime, elapsedMillis, bootCount)
 
     private fun pendingInvocation(approval: PendingToolApproval) = ToolInvocation(
         conversationId = approval.conversationId,

@@ -6,7 +6,17 @@ import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 
 /** In-memory contract fixture only; it does not stand in for Room/SQLite integration tests. */
-internal class ContractRepository(private val now: Instant) : ConversationRepository {
+internal class ContractRepository(private val clock: Clock) : ConversationRepository {
+    constructor(now: Instant) : this(
+        Clock {
+            ClockSnapshot(
+                wallTime = now,
+                elapsedRealtimeMillis = now.toEpochMilli(),
+                bootCount = BootCount.Known(1),
+            )
+        },
+    )
+
     private val mutex = Mutex()
     private val conversations = mutableMapOf<ConversationId, Conversation>()
     private val messages = mutableMapOf<ConversationId, MutableList<Message>>()
@@ -167,6 +177,12 @@ internal class ContractRepository(private val now: Instant) : ConversationReposi
         require(updated.request == current.request)
         require(updated.requestFingerprint == current.requestFingerprint)
         require(updated.approval == current.approval)
+        if (expected == ToolInvocationStatus.APPROVED && updated.status == ToolInvocationStatus.RUNNING &&
+            current.approval?.isExpiredAt(clock.snapshot()) == true
+        ) {
+            invocations[key] = current.copy(status = ToolInvocationStatus.EXPIRED)
+            return@withLock ToolInvocationTransition.StateConflict(ToolInvocationStatus.EXPIRED)
+        }
         invocations[key] = updated
         ToolInvocationTransition.Updated(updated)
     }
@@ -183,15 +199,23 @@ internal class ContractRepository(private val now: Instant) : ConversationReposi
         if (approval.conversationId != conversationId || current.conversationId != conversationId) {
             return@withLock ApprovalClaimResult.WrongConversation
         }
-        if (!approval.isBoundToOriginalRequest() ||
-            !current.requestFingerprint.matches(current.conversationId, current.request) ||
+        if (!current.requestFingerprint.matches(current.conversationId, current.request) ||
             current.requestFingerprint != approval.requestFingerprint
         ) {
             return@withLock ApprovalClaimResult.FingerprintMismatch
         }
-        if (now >= approval.expiresAt) {
-            invocations[entry.key] = current.copy(status = ToolInvocationStatus.EXPIRED)
-            return@withLock ApprovalClaimResult.Expired
+        when (approval.validateFor(conversationId, clock.snapshot())) {
+            ApprovalValidationResult.WrongConversation -> return@withLock ApprovalClaimResult.WrongConversation
+            ApprovalValidationResult.FingerprintMismatch -> return@withLock ApprovalClaimResult.FingerprintMismatch
+            ApprovalValidationResult.Expired -> {
+                if (current.status == ToolInvocationStatus.PENDING_APPROVAL ||
+                    current.status == ToolInvocationStatus.APPROVED
+                ) {
+                    invocations[entry.key] = current.copy(status = ToolInvocationStatus.EXPIRED)
+                }
+                return@withLock ApprovalClaimResult.Expired
+            }
+            is ApprovalValidationResult.Valid -> Unit
         }
         if (current.status != ToolInvocationStatus.PENDING_APPROVAL) {
             return@withLock ApprovalClaimResult.AlreadyConsumed
@@ -232,9 +256,11 @@ internal class ContractRepository(private val now: Instant) : ConversationReposi
             }
         }
         var expired = 0
+        val now = clock.snapshot()
         invocations.entries.toList().forEach { (key, invocation) ->
-            if (invocation.status == ToolInvocationStatus.PENDING_APPROVAL &&
-                invocation.approval != null && now >= invocation.approval.expiresAt
+            if ((invocation.status == ToolInvocationStatus.PENDING_APPROVAL ||
+                    invocation.status == ToolInvocationStatus.APPROVED) &&
+                invocation.approval?.isExpiredAt(now) == true
             ) {
                 invocations[key] = invocation.copy(status = ToolInvocationStatus.EXPIRED)
                 expired++

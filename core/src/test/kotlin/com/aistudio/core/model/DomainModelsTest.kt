@@ -163,10 +163,24 @@ class DomainModelsTest {
                 MessageContent.text("missing structured result"), createdAt, MessageStatus.COMPLETED,
             )
         }
+        assertFailsWith<IllegalArgumentException> {
+            MessageDraft(
+                MessageId("tool-result-with-extra-text"), conversationId, MessageRole.TOOL,
+                MessageContent(listOf(MessagePart.Text("extra"), MessagePart.ToolResult(toolResult))),
+                createdAt, MessageStatus.COMPLETED,
+            )
+        }
         assertEquals(MessageRole.TOOL, MessageDraft(
             MessageId("good-tool-result"), conversationId, MessageRole.TOOL,
             MessageContent(listOf(MessagePart.ToolResult(toolResult))), createdAt, MessageStatus.COMPLETED,
         ).role)
+        assertFailsWith<IllegalArgumentException> {
+            Message(
+                MessageId("message-tool-result-with-extra-text"), conversationId, MessageRole.TOOL,
+                MessageContent(listOf(MessagePart.ToolResult(toolResult), MessagePart.Text("extra"))),
+                createdAt, 0,
+            )
+        }
     }
 
     @Test

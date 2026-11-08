@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Duration
 import java.time.Instant
 
 /** Canonical JSON object text produced by a provider adapter; core treats it as opaque data. */
@@ -117,6 +118,7 @@ fun ToolInvocationStatus.canTransitionTo(next: ToolInvocationStatus): Boolean = 
     ToolInvocationStatus.APPROVED -> next in setOf(
         ToolInvocationStatus.RUNNING,
         ToolInvocationStatus.CANCELLED,
+        ToolInvocationStatus.EXPIRED,
     )
     ToolInvocationStatus.RUNNING -> next in setOf(
         ToolInvocationStatus.COMPLETED,
@@ -191,17 +193,31 @@ data class PendingToolApproval(
     val requestFingerprint: RequestFingerprint,
     val createdAt: Instant,
     val expiresAt: Instant,
+    val createdElapsedRealtimeMillis: Long,
+    val expiresElapsedRealtimeMillis: Long,
+    val bootCount: BootCount.Known,
 ) {
     init {
         require(expiresAt > createdAt) { "Approval must expire after it is created" }
+        require(createdElapsedRealtimeMillis >= 0) { "Approval elapsed creation time must not be negative" }
+        require(expiresElapsedRealtimeMillis > createdElapsedRealtimeMillis) {
+            "Approval elapsed deadline must follow its creation time"
+        }
     }
 
     fun isBoundToOriginalRequest(): Boolean = requestFingerprint.matches(conversationId, request)
 
-    fun validateFor(expectedConversationId: ConversationId, now: Instant): ApprovalValidationResult = when {
+    fun isExpiredAt(now: ClockSnapshot): Boolean = when {
+        now.bootCount !is BootCount.Known -> true
+        bootCount.value != now.bootCount.value -> true
+        now.elapsedRealtimeMillis >= expiresElapsedRealtimeMillis -> true
+        else -> false
+    }
+
+    fun validateFor(expectedConversationId: ConversationId, now: ClockSnapshot): ApprovalValidationResult = when {
         conversationId != expectedConversationId -> ApprovalValidationResult.WrongConversation
         !isBoundToOriginalRequest() -> ApprovalValidationResult.FingerprintMismatch
-        now >= expiresAt -> ApprovalValidationResult.Expired
+        isExpiredAt(now) -> ApprovalValidationResult.Expired
         else -> ApprovalValidationResult.Valid(this)
     }
 
@@ -210,16 +226,39 @@ data class PendingToolApproval(
             id: ApprovalId,
             conversationId: ConversationId,
             request: ToolRequest,
-            createdAt: Instant,
-            expiresAt: Instant,
-        ) = PendingToolApproval(
-            id = id,
-            conversationId = conversationId,
-            request = request,
-            requestFingerprint = RequestFingerprint.calculate(conversationId, request),
-            createdAt = createdAt,
-            expiresAt = expiresAt,
-        )
+            now: ClockSnapshot,
+            ttl: Duration,
+        ): PendingToolApproval {
+            val approvalBootCount = now.bootCount as? BootCount.Known
+                ?: throw IllegalArgumentException("Cannot create a tool approval when the boot count is unknown")
+            require(!ttl.isNegative && !ttl.isZero) { "Approval lifetime must be positive" }
+
+            val ttlMillis = try {
+                ttl.toMillis()
+            } catch (exception: ArithmeticException) {
+                throw IllegalArgumentException("Approval lifetime exceeds elapsed-time range", exception)
+            }
+            require(ttlMillis > 0) { "Approval lifetime must be at least one millisecond" }
+
+            val expiresElapsedRealtimeMillis = try {
+                Math.addExact(now.elapsedRealtimeMillis, ttlMillis)
+            } catch (exception: ArithmeticException) {
+                throw IllegalArgumentException("Approval elapsed deadline overflows", exception)
+            }
+            val expiresAt = now.wallTime.plus(ttl)
+
+            return PendingToolApproval(
+                id = id,
+                conversationId = conversationId,
+                request = request,
+                requestFingerprint = RequestFingerprint.calculate(conversationId, request),
+                createdAt = now.wallTime,
+                expiresAt = expiresAt,
+                createdElapsedRealtimeMillis = now.elapsedRealtimeMillis,
+                expiresElapsedRealtimeMillis = expiresElapsedRealtimeMillis,
+                bootCount = approvalBootCount,
+            )
+        }
     }
 }
 
@@ -239,6 +278,7 @@ sealed interface ToolInvocationTransition {
 
 sealed interface ToolDispatch {
     data class Completed(val result: ToolResult) : ToolDispatch
+    data class PersistenceFailure(val safeMessage: String? = null) : ToolDispatch
     data class AwaitingApproval(
         val approvalId: ApprovalId,
         val conversationId: ConversationId,
